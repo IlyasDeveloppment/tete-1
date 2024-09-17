@@ -1,0 +1,102 @@
+# Initialize variables to track check statuses
+lint_status="Passed"
+coverage_status="Passed"
+build_status="Passed"
+depcheck_status="Passed"
+
+# Define color codes
+redColor='\033[31m'
+greenColor='\033[32m'
+resetColor='\033[0m'
+
+# Run lint check
+npm run lint
+
+# Check the exit status of the lint command
+lint_exit_status=$?
+if [ $lint_exit_status -ne 0 ]; then
+  echo -e "${redColor}Linting failed. Please fix the lint errors before committing.${resetColor}"
+  echo -e "${redColor}Try to fix linting issues by running: npm run lint:fix${resetColor}"
+  lint_status="Failed"
+fi
+
+# Run coverage check
+npm run coverage
+
+# Check the exit status of the coverage command
+coverage_exit_status=$?
+if [ $coverage_exit_status -ne 0 ]; then
+  echo -e "${redColor}Coverage check failed.${resetColor}"
+  coverage_status="Failed"
+fi
+
+# Run build process
+npm run build
+
+# Check the exit status of the build command
+build_exit_status=$?
+if [ $build_exit_status -ne 0 ]; then
+  echo -e "${redColor}Build process failed.${resetColor}"
+  build_status="Failed"
+fi
+
+# Run depcheck and ignore specified dependencies
+npx depcheck --json --ignore-matches="ts-jest,@types/jest" > depcheck-result.json
+
+node -e "
+const fs = require('fs');
+const path = require('path');
+
+const redColor = '\x1b[31m';
+const resetColor = '\x1b[0m';
+
+try {
+  const result = JSON.parse(fs.readFileSync(path.resolve('depcheck-result.json'), 'utf8'));
+  const unusedDeps = result.dependencies.filter(dep => dep !== 'depcheck');
+  const unusedDevDeps = result.devDependencies.filter(dep => dep !== 'depcheck' && dep !== '@types/jest' && dep !== 'ts-jest');
+
+  if (unusedDeps.length > 0 || unusedDevDeps.length > 0) {
+    console.error(redColor + 'There are unused dependencies:' + resetColor);
+    if (unusedDeps.length > 0) {
+      console.error(redColor + JSON.stringify(unusedDeps, null, 2) + resetColor);
+    }
+    if (unusedDevDeps.length > 0) {
+      console.error(redColor + 'There are unused devDependencies:' + resetColor);
+      console.error(redColor + JSON.stringify(unusedDevDeps, null, 2) + resetColor);
+    }
+    process.exit(1);  
+  } else {
+    fs.unlinkSync(path.resolve('depcheck-result.json'));
+    process.exit(0);
+  }
+} catch (err) {
+  console.error('Error processing depcheck results:', err);
+  process.exit(1);
+}
+"
+
+depcheck_exit_status=$?
+
+if [ $depcheck_exit_status -ne 0 ]; then
+  depcheck_status="Failed"
+fi
+
+# Clean up if no unused dependencies are found
+rm -f depcheck-result.json
+
+# Remove build directory
+rm -rf build
+
+# Display summary report
+echo -e "\n${greenColor}Summary Report:${resetColor}"
+echo -e "Lint Check: $([ "$lint_status" = "Passed" ] && echo -e "${greenColor}Passed${resetColor}" || echo -e "${redColor}Failed${resetColor}")"
+echo -e "Coverage Check: $([ "$coverage_status" = "Passed" ] && echo -e "${greenColor}Passed${resetColor}" || echo -e "${redColor}Failed${resetColor}")"
+echo -e "Build Check: $([ "$build_status" = "Passed" ] && echo -e "${greenColor}Passed${resetColor}" || echo -e "${redColor}Failed${resetColor}")"
+echo -e "Dependency Check: $([ "$depcheck_status" = "Passed" ] && echo -e "${greenColor}Passed${resetColor}" || echo -e "${redColor}Failed${resetColor}")"
+
+# Exit with the appropriate status
+if [ "$lint_status" = "Failed" ] || [ "$coverage_status" = "Failed" ] || [ "$build_status" = "Failed" ] || [ "$depcheck_status" = "Failed" ]; then
+  exit 1
+else
+  exit 0
+fi

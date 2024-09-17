@@ -1,0 +1,144 @@
+name: Quality Assurance workflow
+
+on:
+  pull_request:
+    branches: [development]
+
+jobs:
+  check-pr-title:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Check Title Format
+        uses: deepakputhraya/action-pr-title@master
+        with:
+          regex: '^(feat|fix|refactor|docs|test):\s\[\w+-\d+\]\s.+$'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+  setup:
+    runs-on: ubuntu-latest
+    environment: Dev
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+      - name: Process dev.linkopus dependencies
+        run: |
+          node -e '
+            const fs = require("fs");
+            const package = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            const devLinkopusDeps = {};
+            for (const [key, value] of Object.entries(package.dependencies || {})) {
+              if (key.startsWith("dev.linkopus")) {
+                devLinkopusDeps[key] = value;
+                delete package.dependencies[key];
+              }
+            }
+            fs.writeFileSync("package.json", JSON.stringify(package, null, 2));
+            fs.writeFileSync("dev-linkopus-deps.json", JSON.stringify(devLinkopusDeps, null, 2));
+          '
+          
+          npm install
+          
+          node -e '
+            const fs = require("fs");
+            const package = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            const devLinkopusDeps = JSON.parse(fs.readFileSync("dev-linkopus-deps.json", "utf8"));
+            package.dependencies = { ...package.dependencies, ...devLinkopusDeps };
+            fs.writeFileSync("package.json", JSON.stringify(package, null, 2));
+          '
+          
+          echo "registry=http://${{ secrets.VERDACCIO_REGISTRY }}/" > .npmrc
+          echo "//${{ secrets.VERDACCIO_REGISTRY }}/:_authToken=\"${{ secrets.VERDACCIO_TOKEN }}\"" >> .npmrc
+          
+          npm install
+        
+      - name: Compress node_modules
+        run: |
+            tar -cf node_modules.tar node_modules
+            zstd node_modules.tar
+
+      - name: Upload node_modules artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: node_modules
+          path: node_modules.tar.zst
+
+  lint:
+    needs: setup
+    runs-on: ubuntu-latest
+    environment: Dev
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Download node_modules artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: node_modules
+
+      - name: Extract node_modules
+        run: | 
+          zstd -d node_modules.tar.zst
+          tar -xf node_modules.tar
+      
+      - name: Run Linter   
+        run: npm run lint
+    
+  coverage:
+    needs: setup
+    runs-on: ubuntu-latest
+    environment: Dev
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Download node_modules artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: node_modules
+
+      - name: Extract node_modules
+        run: | 
+          zstd -d node_modules.tar.zst
+          tar -xf node_modules.tar
+
+      - name: Run Coverage   
+        run: npm run coverage
+
+      - name: Code Coverage Report
+        uses: romeovs/lcov-reporter-action@v0.3.1
+        with:
+          github-token: ${{ secrets.GH_PAT }}
+          lcov-file: ./coverage/lcov.info
+          delete-old-comments: true
+
+  security-check:
+    needs: setup
+    runs-on: ubuntu-latest
+    environment: Dev
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Download node_modules artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: node_modules
+
+      - name: Extract node_modules
+        run: | 
+          zstd -d node_modules.tar.zst
+          tar -xf node_modules.tar
+
+      - name: Run npm audit
+        run: npm audit --audit-level=high
+        continue-on-error: true
